@@ -59,12 +59,16 @@ struct TeleopTwistJoy::Impl
   bool require_enable_button;
   int64_t enable_button;
   int64_t enable_turbo_button;
+  int64_t enable_smart_teleop_button;
+
+  bool toggle_smart_teleop;
 
   std::map<std::string, int64_t> axis_linear_map;
   std::map<std::string, std::map<std::string, double>> scale_linear_map;
 
   std::map<std::string, int64_t> axis_angular_map;
   std::map<std::string, std::map<std::string, double>> scale_angular_map;
+  double in_place_x_threshold;
 
   bool sent_disable_msg;
 };
@@ -85,6 +89,10 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
   pimpl_->enable_button = this->declare_parameter("enable_button", 5);
 
   pimpl_->enable_turbo_button = this->declare_parameter("enable_turbo_button", -1);
+
+  pimpl_->enable_smart_teleop_button = this->declare_parameter("enable_smart_teleop_button", -1);
+
+  pimpl_->in_place_x_threshold = this->declare_parameter("in_place_x_threshold", 0.1);
 
   std::map<std::string, int64_t> default_linear_map{
     {"x", 5L},
@@ -158,17 +166,19 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
   }
 
   pimpl_->sent_disable_msg = false;
+  pimpl_->toggle_smart_teleop = false;
 
   auto param_callback =
   [this](std::vector<rclcpp::Parameter> parameters)
   {
     static std::set<std::string> intparams = {"axis_linear.x", "axis_linear.y", "axis_linear.z",
                                               "axis_angular.yaw", "axis_angular.pitch", "axis_angular.roll",
-                                              "enable_button", "enable_turbo_button"};
+                                              "enable_button", "enable_turbo_button", "enable_smart_teleop_button"};
     static std::set<std::string> doubleparams = {"scale_linear.x", "scale_linear.y", "scale_linear.z",
                                                  "scale_linear_turbo.x", "scale_linear_turbo.y", "scale_linear_turbo.z",
                                                  "scale_angular.yaw", "scale_angular.pitch", "scale_angular.roll",
-                                                 "scale_angular_turbo.yaw", "scale_angular_turbo.pitch", "scale_angular_turbo.roll"};
+                                                 "scale_angular_turbo.yaw", "scale_angular_turbo.pitch", "scale_angular_turbo.roll",
+                                                 "in_place_x_threshold"};
     static std::set<std::string> boolparams = {"require_enable_button"};
     auto result = rcl_interfaces::msg::SetParametersResult();
     result.successful = true;
@@ -222,6 +232,10 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
       else if (parameter.get_name() == "enable_turbo_button")
       {
         this->pimpl_->enable_turbo_button = parameter.get_value<rclcpp::PARAMETER_INTEGER>();
+      }
+      else if (parameter.get_name() == "enable_smart_teleop_button")
+      {
+        this->pimpl_->enable_smart_teleop_button = parameter.get_value<rclcpp::PARAMETER_INTEGER>();
       }
       else if (parameter.get_name() == "axis_linear.x")
       {
@@ -295,6 +309,10 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
       {
         this->pimpl_->scale_angular_map["normal"]["roll"] = parameter.get_value<rclcpp::PARAMETER_DOUBLE>();
       }
+      else if (parameter.get_name() == "in_place_x_threshold")
+      {
+        this->pimpl_->in_place_x_threshold = parameter.get_value<rclcpp::PARAMETER_DOUBLE>();
+      }
     }
     return result;
   };
@@ -334,13 +352,24 @@ void TeleopTwistJoy::Impl::sendCmdVelMsg(const sensor_msgs::msg::Joy::SharedPtr 
   cmd_vel_msg->angular.y = getVal(joy_msg, axis_angular_map, scale_angular_map[which_map], "pitch");
   cmd_vel_msg->angular.x = getVal(joy_msg, axis_angular_map, scale_angular_map[which_map], "roll");
 
+  // If smart teleop is enabled, reject all in-place rotation
+  if (toggle_smart_teleop && cmd_vel_msg->angular.z !=0 && cmd_vel_msg->linear.x <= in_place_x_threshold && cmd_vel_msg->linear.x >= -in_place_x_threshold){
+    cmd_vel_msg->angular.z = 0.0;
+  }
+
   cmd_vel_pub->publish(std::move(cmd_vel_msg));
   sent_disable_msg = false;
 }
 
 void TeleopTwistJoy::Impl::joyCallback(const sensor_msgs::msg::Joy::SharedPtr joy_msg)
 {
-  if (enable_turbo_button >= 0 &&
+  if (enable_smart_teleop_button >= 0 &&
+      static_cast<int>(joy_msg->buttons.size()) > enable_smart_teleop_button &&
+      joy_msg->buttons[enable_smart_teleop_button])
+  {
+    toggle_smart_teleop = !toggle_smart_teleop;
+  }
+    if (enable_turbo_button >= 0 &&
       static_cast<int>(joy_msg->buttons.size()) > enable_turbo_button &&
       joy_msg->buttons[enable_turbo_button])
   {
