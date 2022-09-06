@@ -29,6 +29,8 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSI
 #include <set>
 #include <string>
 
+#include <math.h>
+
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
@@ -68,7 +70,7 @@ struct TeleopTwistJoy::Impl
 
   std::map<std::string, int64_t> axis_angular_map;
   std::map<std::string, std::map<std::string, double>> scale_angular_map;
-  double in_place_x_threshold;
+  double min_turn_radius;
 
   bool sent_disable_msg;
 };
@@ -92,7 +94,7 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
 
   pimpl_->enable_smart_teleop_button = this->declare_parameter("enable_smart_teleop_button", -1);
 
-  pimpl_->in_place_x_threshold = this->declare_parameter("in_place_x_threshold", 0.1);
+  pimpl_->min_turn_radius = this->declare_parameter("min_turn_radius", 0.1);
 
   std::map<std::string, int64_t> default_linear_map{
     {"x", 5L},
@@ -166,7 +168,7 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
   }
 
   pimpl_->sent_disable_msg = false;
-  pimpl_->toggle_smart_teleop = false;
+  pimpl_->toggle_smart_teleop = true; // Smart teleop enabled by default
 
   auto param_callback =
   [this](std::vector<rclcpp::Parameter> parameters)
@@ -178,7 +180,7 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
                                                  "scale_linear_turbo.x", "scale_linear_turbo.y", "scale_linear_turbo.z",
                                                  "scale_angular.yaw", "scale_angular.pitch", "scale_angular.roll",
                                                  "scale_angular_turbo.yaw", "scale_angular_turbo.pitch", "scale_angular_turbo.roll",
-                                                 "in_place_x_threshold"};
+                                                 "min_turn_radius"};
     static std::set<std::string> boolparams = {"require_enable_button"};
     auto result = rcl_interfaces::msg::SetParametersResult();
     result.successful = true;
@@ -309,9 +311,9 @@ TeleopTwistJoy::TeleopTwistJoy(const rclcpp::NodeOptions& options) : Node("teleo
       {
         this->pimpl_->scale_angular_map["normal"]["roll"] = parameter.get_value<rclcpp::PARAMETER_DOUBLE>();
       }
-      else if (parameter.get_name() == "in_place_x_threshold")
+      else if (parameter.get_name() == "min_turn_radius")
       {
-        this->pimpl_->in_place_x_threshold = parameter.get_value<rclcpp::PARAMETER_DOUBLE>();
+        this->pimpl_->min_turn_radius = parameter.get_value<rclcpp::PARAMETER_DOUBLE>();
       }
     }
     return result;
@@ -353,8 +355,8 @@ void TeleopTwistJoy::Impl::sendCmdVelMsg(const sensor_msgs::msg::Joy::SharedPtr 
   cmd_vel_msg->angular.x = getVal(joy_msg, axis_angular_map, scale_angular_map[which_map], "roll");
 
   // If smart teleop is enabled, reject all in-place rotation
-  if (toggle_smart_teleop && cmd_vel_msg->angular.z !=0 && cmd_vel_msg->linear.x <= in_place_x_threshold && cmd_vel_msg->linear.x >= -in_place_x_threshold){
-    cmd_vel_msg->angular.z = 0.0;
+  if (toggle_smart_teleop && std::abs(cmd_vel_msg->linear.x) <= std::abs(cmd_vel_msg->angular.z * min_turn_radius)){
+    cmd_vel_msg->linear.x = copysign( 1.0, (cmd_vel_msg->linear.x * cmd_vel_msg->angular.z)) * (cmd_vel_msg->angular.z * min_turn_radius);
   }
 
   cmd_vel_pub->publish(std::move(cmd_vel_msg));
